@@ -174,7 +174,7 @@ if uploaded_file is not None:
     # Nuvem de palavras
     # ----------------------------
     st.subheader("Nuvem de palavras")
-    all_text = " ".join([" ".join(list(s)) for s in df_nonempty["__terms_set"]])
+    all_text = " ".join([" ".join([t for t in s if t not in generic_terms]) for s in df_nonempty["__terms_set"]])
     wordcloud = WordCloud(width=800, height=400, background_color="white").generate(all_text)
     plt.figure(figsize=(12,6))
     plt.imshow(wordcloud, interpolation="bilinear")
