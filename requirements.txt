@@ -3,3 +3,4 @@ pandas>=1.5
 numpy>=1.24
 matplotlib>=3.5
 wordcloud>=1.8
+scikit-learn
