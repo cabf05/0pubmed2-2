@@ -16,7 +16,6 @@ st.title("Análise de Tendências de Termos em Artigos PubMed")
 uploaded_file = st.file_uploader("Carregue o arquivo CSV do PubMed", type=["csv"])
 if uploaded_file is not None:
     df = pd.read_csv(uploaded_file)
-    
     st.success(f"Arquivo carregado com {len(df)} registros.")
     
     # ----------------------------
@@ -25,13 +24,9 @@ if uploaded_file is not None:
     col_pub = "Date"
     col_create = "Date - Create"
     
-    # Criar coluna __date
     df["__date"] = pd.to_datetime(df[col_pub], errors='coerce')
     df["__date"] = df["__date"].fillna(pd.to_datetime(df[col_create], errors='coerce'))
-    
-    # Remover linhas sem data
     df_nonempty = df.dropna(subset=["__date"]).copy()
-    
     st.write(f"Registros com data válida: {len(df_nonempty)}")
     
     # ----------------------------
@@ -45,7 +40,7 @@ if uploaded_file is not None:
         elif interval_choice == "Trimestral":
             quarter = (date.month-1)//3*3 + 1
             return pd.Timestamp(date.year, quarter, 1)
-        else:  # Anual
+        else:
             return pd.Timestamp(date.year, 1, 1)
     
     df_nonempty["__period_start"] = df_nonempty["__date"].apply(normalize_period)
@@ -67,36 +62,46 @@ if uploaded_file is not None:
     
     df_nonempty["__terms_set"] = df_nonempty.apply(extract_terms, axis=1)
     
-    # Pré-carregar termos genéricos
-    generic_terms = [
-        "male","female","age","human","adult","child","middle aged","female","male","in vitro",
-        "in vivo","review","case report","animal","elderly","pregnancy","female patient","male patient",
-        "newborn","adolescent","infant","rat","mouse","study","clinical trial","controlled study"
+    # ----------------------------
+    # Termos genéricos pré-carregados
+    # ----------------------------
+    default_generic_terms = [
+        "male","female","age","human","adult","child","middle aged","in vitro",
+        "in vivo","review","case report","animal","elderly","pregnancy",
+        "female patient","male patient","newborn","adolescent","infant",
+        "rat","mouse","study","clinical trial","controlled study"
     ]
-    generic_terms = set(generic_terms)
+    
+    # Permitir usuário inserir/alterar termos genéricos
+    generic_terms_selected = st.multiselect(
+        "Termos genéricos (pré-carregados, você pode adicionar ou remover):",
+        options=default_generic_terms,
+        default=default_generic_terms
+    )
+    generic_terms = set([t.lower() for t in generic_terms_selected])
     
     # ----------------------------
-    # Mostrar amostra de dados
+    # Amostra de dados
     # ----------------------------
     sample = df_nonempty.head(10)[["Title","__date","__period_start","__terms_set"]]
     st.subheader("Amostra de registros processados")
     st.dataframe(sample)
     
     # ----------------------------
-    # Construir série temporal por termo
+    # Construir série temporal por termo não genérico
     # ----------------------------
     all_terms = set()
     df_nonempty["__terms_set"].apply(lambda s: all_terms.update(s))
-    all_terms = all_terms - generic_terms
-    st.write(f"Total de termos únicos (sem genéricos): {len(all_terms)}")
+    non_generic_terms = all_terms - generic_terms
+    st.write(f"Total de termos únicos (sem genéricos): {len(non_generic_terms)}")
     
-    # Seleção de termos pelo usuário
-    selected_terms = st.multiselect("Selecione termos para análise (ou deixe vazio para analisar todos)", list(all_terms))
+    selected_terms = st.multiselect("Selecione termos para análise (não genéricos, ou vazio para todos)", list(non_generic_terms))
     if len(selected_terms) == 0:
-        selected_terms = list(all_terms)
+        selected_terms = list(non_generic_terms)
     
-    # Construir matriz termo x período
     periods = sorted(df_nonempty["__period_start"].unique())
+    
+    # Termos não genéricos
     term_freq = {}
     for term in selected_terms:
         freq_list = []
@@ -106,11 +111,24 @@ if uploaded_file is not None:
         term_freq[term] = freq_list
     
     df_freq = pd.DataFrame(term_freq, index=periods)
-    st.subheader("Série temporal de frequência por termo")
+    st.subheader("Série temporal de termos não genéricos")
     st.dataframe(df_freq)
     
+    # Termos genéricos
+    generic_freq = {}
+    for term in generic_terms:
+        freq_list = []
+        for p in periods:
+            count = df_nonempty[df_nonempty["__period_start"]==p]["__terms_set"].apply(lambda s: term in s).sum()
+            freq_list.append(count)
+        generic_freq[term] = freq_list
+    
+    df_generic_freq = pd.DataFrame(generic_freq, index=periods)
+    st.subheader("Série temporal de termos genéricos")
+    st.dataframe(df_generic_freq)
+    
     # ----------------------------
-    # Cálculo métricas de tendência
+    # Cálculo métricas de tendência para termos não genéricos
     # ----------------------------
     slope_scores = {}
     z_scores = {}
@@ -123,22 +141,19 @@ if uploaded_file is not None:
         # Regressão linear
         lr = LinearRegression().fit(X, y)
         slope = lr.coef_[0]
-        slope_score = slope * (y[-1])  # multiplicar por freq recente
+        slope_score = slope * (y[-1])
         slope_scores[term] = slope_score
         
         # Z-score de explosão
         if len(y) > 1:
             hist_mean = np.mean(y[:-1])
             hist_std = np.std(y[:-1])
-            if hist_std > 0:
-                z = (y[-1]-hist_mean)/hist_std
-            else:
-                z = 0
+            z = (y[-1]-hist_mean)/hist_std if hist_std>0 else 0
         else:
             z = 0
         z_scores[term] = z
         
-        # Recency score (últimos 12 períodos ou todos se <12)
+        # Recency score
         window = min(12,len(y))
         freq_recent = np.sum(df_freq[term].values[-window:])
         freq_hist = np.sum(df_freq[term].values[:-window])
@@ -152,7 +167,7 @@ if uploaded_file is not None:
         "RecencyScore": [recency_scores[t] for t in selected_terms]
     }).sort_values("SlopeScore", ascending=False)
     
-    st.subheader("Métricas de tendência por termo")
+    st.subheader("Métricas de tendência por termo (não genéricos)")
     st.dataframe(df_metrics)
     
     # ----------------------------
